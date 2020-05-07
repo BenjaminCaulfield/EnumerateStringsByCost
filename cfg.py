@@ -1,6 +1,7 @@
 import math
 import heapq
 import copy
+import cfg
 
 class DerivationTree:
     root = "S" #Name of root nonterminal
@@ -8,6 +9,7 @@ class DerivationTree:
     cost = None #Stores cost of tree
     costFunc = lambda x: x #Cost function: x is a list of costs of subtrees
     children = [] #list of children that are derivation trees
+
 
     assert len(children) == func[1]
 
@@ -57,7 +59,10 @@ class DerivationTree:
         return string
     
     def __hash__(self):
-        return hash(str(self)) + hash(self.cost)
+        h = hash(str(self))
+        if self.cost:
+            h += hash(self.cost)
+        return h
 
     #computes cost of tree
     #If checkCost = True, checks that computed cost of tree equals 'cost'
@@ -67,7 +72,6 @@ class DerivationTree:
             return self.cost
         newCost = 0
         if self.func[1] == None:
-            print "HHEEEEEEEEEEEEEEEEEEEEE"
             newCost = self.costFunc([])
         else:
             args = []
@@ -84,6 +88,86 @@ class DerivationTree:
     def getRootProd(self):
         return [self.root, self.func[0], [C.root for C in self.children]]
 
+
+#A derivation tree, but it can have nonterminals or variables at the leaves (ignore the self.root value)
+#Used in let statements
+class VarExpression(DerivationTree):
+    variables = [] #variables appearing at leaves in expression
+    nonterminals = [] #nonterminals appearing at leaves in expression
+    foundVars = False
+
+    #updates list of variables and nonterminals appearing at roots in tree
+    def getVarsNonTs(self, allVars, nonTerms):
+        self.foundVars = True
+        self.variables = set()
+        self.nonterminals = [] #counts repeats of non-terminals but not variables
+        if self.children == []:
+            if self.func[0] in allVars:
+                self.variables.add(self.func[0])
+            elif self.func[0] in nonTerms:
+                self.nonterminals.append(self.func[0])
+        else:
+            for child in self.children:
+                child.getVarsNonTs(allVars, nonTerms)
+                self.variables.update(child.variables)
+                self.nonterminals += child.nonterminals
+        self.variables = list(self.variables)
+
+    #the cost function for the new flattened symbol
+    #x is concatenated list of nonterminals-values and variable values
+    #passes values of all variables and only values of relevant non-terminals to each child
+    #getVarsNonTs must have been called for it to work
+    def flattenedFunc(self, x):
+        assert self.foundVars, "getVarsNonTs must be called first"
+        varVals = {self.variables[i]:x[i + len(self.nonterminals)] for i in range(0, len(self.variables))}
+        nonTs = x[0:len(self.nonterminals)]
+        if self.children == []:
+            if self.func[0] in varVals:
+                assert nonTs == []
+                return varVals[self.func[0]]
+            elif self.func[0] in self.nonterminals:
+                assert len(nonTs) == 1
+                return nonTs[0]
+            else:
+                return self.costFunc([])
+        subVals = []
+        for child in self.children:
+            subVals.append(child.flattenedFunc(nonTs[0:len(child.nonterminals)] + [varVals[v] for v in child.variables]))
+            nonTs = nonTs[len(child.nonterminals):]
+        return self.costFunc(subVals)
+
+    #the cost function for the new flattened symbol
+    #x is concatenated list of nonterminals-values
+    #passes  values of relevant non-terminals to each child
+    #getVarsNonTs must have been called for it to work
+    def oldflattenedFunc(self, x):
+        assert self.foundVars, "getVarsNonTs must be called first"
+        #varVals = {self.variables[i]:x[i + len(self.nonterminals)] for i in range(0, len(self.variables))}
+        #nonTs = x[0:len(self.nonterminals)]
+        if self.children == []:
+            if self.func[0] in self.nonterminals:
+                assert len(nonTs) == 1
+                return nonTs[0]
+            else:
+                return self.costFunc([])
+        subVals = []
+        for child in self.children:
+            subVals.append(child.flattenedFunc(nonTs[0:len(child.nonterminals)]))
+            nonTs = nonTs[len(child.nonterminals):]
+        return self.costFunc(subVals)
+
+    #returns a varExpression with all leaves called varName replaced by repExpression
+    #NOTE: can make more efficient by having it handle multiple replacements at once
+    def replaceVar(self, varName, repExpression):
+        if self.func[0] == varName:
+            return copy.deepcopy(repExpression)
+        else:
+            newchildren = []
+            for child in self.children:
+                newchildren.append(child.replaceVar(varName, repExpression))
+            self.children = newchildren
+        return self
+            
 class CFG:
     testCons = True #runs test to make sure everything is consistent
     root = "S" #root nonterminal
@@ -91,6 +175,193 @@ class CFG:
     alphabet = {} #maps names of terminals to rank (arity) 
     productions = [] #list of productions of the form [N, f, [X1, X2, ...]] N is root, f is function symbol, [X1,...] is RHS
     costs = {} #maps function symbols to superior functions from list(float) -> float
+
+    let_productions = [] #list of productions/ let-expressions of form [N, [[v1, e1], [v2, e2],...], f, [e1', e2',....]]  
+    #The pairs [vi, ei] are the settings let(vi = ei) in the let statements
+    #the e's are lists of form [f, [e'_1, ...]] containing variables, nonterminals, and terminals at the leaves
+    
+    #helper function to processLetStatements
+    #finds location of all variables and let statements in expression [f, [e'_1, ...]] 
+    #represents locations as list of children to follow from root e.g., location of x in f(a, g(x,b)) is [1, 0]
+    def findVars(self, vNT, expression):
+        varIndices = {v:[] for v in vNT}
+        index = []
+        subExp = [expression] #pointers to all subexpressions of currently examined expression
+        while True:
+            print str(["XXXX" + str(x) + "BBB" for x in subExp])
+            if subExp[-1][1] == []: #If at a leaf
+                if subExp[-1][0] in vNT:
+                    varIndices[subExp[-1][0]].append(copy.copy(index))
+                subExp = subExp[:-1] #pops and points parent to next child.
+                index[-1] = index[-1] + 1
+            else:
+                if len(subExp) == len(index) and index[-1] == len(subExp[-1][1]): #all children are seen. pops and points parent to next child
+                    subExp = subExp[:-1]
+                    index = index[:-1]
+                    if subExp == []:
+                        return varIndices
+                    index[-1]+=1
+                    continue
+                if len(subExp) == len(index) + 1: #index doesn't point to next child
+                    index.append(0)
+                assert len(subExp) == len(index), [subExp] + [index]
+                assert len(subExp[-1][1]) > index[-1]
+                subExp.append(subExp[-1][1][index[-1]])
+#WHAT TO DO HERE                subExp.append(subExp[-1][1][index[-1]])
+                
+        
+
+    #adds productions that are equivalent to the statements in let-productions
+    # let-productions are of form [N, [[v1, e1], [v2, e2],...], e]
+    def oldProcessLets(self):
+        #for ind in range(0,len(self.let_productions)):
+        for letProd in self.let_productions:
+            print letProd
+            varDefs = letProd[1]
+            variables = [p[0] for p in varDefs]
+            for ind in range(0,len(varDefs)):
+                varDef = varDefs[-(ind+1)] #runs through list in reverse since later expressions might include earier variables
+                if letProd[2].func[0] in variables: #expression on rhs is a variable
+                    assert len(letProd[2].children) == 0
+                    assert varDef[0] == letProd[2].func[0] #current variable defined is rhs of let-expression
+                    letProd[2].func = (varDef[1].func[0], len(varDef[1].children)) #replaces variable with variable rhs of let-expression
+                    letProd[2].children = copy.deepcopy(varDef[1].children) #DO I NEED DEEPCOPY HERE?
+                else:
+                    newSubs = []
+                    for subExpr in letProd[2].children:
+                        newSubs.append(subExpr.replaceVar(varDef[0], varDef[1]))
+                    letProd[2].children = newSubs
+            #replace expression with single function call & flattened cost function
+            
+
+            newSym = letProd[2].func[0] + "_" + str(hash(letProd[2])) #Warning:hash function is not deterministic
+            letProd[2].getVarsNonTs(variables, self.nonterminals)
+            self.alphabet[newSym] = len(letProd[2].variables) + len(letProd[2].nonterminals)
+            newProd = [letProd[0], newSym, ]
+            return letProd[2]
+
+
+        #adds productions that are equivalent to the statements in let-productions
+    # let-productions are of form [N, [[v1, e1], [v2, e2],...[vk,ek]], e]
+    def processLets(self):
+        #for ind in range(0,len(self.let_productions)):
+        for letProd in self.let_productions:
+            print letProd
+            varDefs = copy.copy(letProd[1]) #pairs [v1, e1]
+            variables = [p[0] for p in varDefs]
+            if letProd[2].func[0] in variables:
+                assert varDefs[-1][0] == letProd[2].func[0] #e is a variable, assert it's the last variable (vk = ek)
+                varDefs = varDefs[:-1] + [[None, varDefs[-1][1]]] #treats last var def ek as if it were e
+                variables.remove(letProd[2].func[0]) #removes vk from variables
+            else:
+                varDefs.append([None, letProd[2]])
+            print varDefs
+            varNonTs = {v:v+"_"+str(sum([hash(varDef[1]) for varDef in varDefs])%10000) for v in variables} 
+            for varDef in varDefs:
+
+                assert not varDef[1].func[0] in variables, "found variable definition vi = vj" 
+
+                nonT = None #nonT is nonterminal on LHS of production
+                if varDef[0]:
+                    nonT = varNonTs[varDef[0]]
+                else:
+                    nonT = letProd[0]
+
+                #handles case when zi = A. Adds production z-> A. Later copies all A -> f(..) to zi -> f(..)
+                if varDef[1].func[0] in self.nonterminals: 
+####                    for prod in self.productions:
+####                        if prod[0] == varDef[1].func[0]:
+####                            newProd = copy.deepcopy(prod)
+####                            newProd[0] = nonT
+####                            self.productions.append(newProd)
+####                    for prod in self.let_productions:
+####                        if prod[0] == varDef[1].func[0]:
+####                            newProd = copy.deepcopy(prod)
+####                            newProd[0] = nonT
+####                            self.let_productions.append(newProd)
+                    print "R", nonT
+                    if nonT == varDef[1].func[0]:
+                        continue
+                    self.productions.append([nonT, varDef[1].func[0], []]) #production of form z -> A
+                    continue
+
+
+                
+                newSym = varDef[1].func[0] + "_" + str(hash(varDef[1])%10000) #Warning:hash function is not deterministic
+                varDef[1].getVarsNonTs(variables, self.nonterminals)
+
+                #for v in varDef[1].variables:
+#                    newVar = VarExpression(function = (varNonTs[v], 0))
+#                    varDef[1].replaceVar(v, newVar)
+                
+                #varDef[1].getVarsNonTs([], self.nonterminals)
+                print newSym, varDef
+                self.alphabet[newSym] =len(varDef[1].variables) + len(varDef[1].nonterminals)
+                self.costs[newSym] = varDef[1].flattenedFunc
+
+                newProd = [nonT, newSym, varDef[1].nonterminals + [varNonTs[v] for v in varDef[1].variables]]
+                self.productions.append(newProd)
+            self.nonterminals += varNonTs.values()
+        self.nonterminals = list(set(self.nonterminals)) #removes duplicates
+        newProductions = []
+        badProductions = []
+        for prod in self.productions: #handles productions A -> B
+            if prod[1] in self.nonterminals:
+                for prod2 in self.productions:
+                    if prod2[0] == prod[1] and prod2[1] not in self.nonterminals:
+                        newProductions.append([prod[0], prod2[1], prod2[2]])
+                badProductions.append(prod)
+        for p in badProductions:
+            self.productions.remove(p)
+        self.productions += newProductions
+
+    #checks if grammar structure and func names are same
+    #doesn't check if cost funcs are same
+    #if nonterminal names are different, the grammars are considered different
+    def __eq__(self, other):
+        if self.root != other.root:
+            return False
+        selfN = set(self.nonterminals)
+        otherN = set(other.nonterminals)
+        if selfN != otherN:
+            return False
+        selfA = set(self.alphabet)
+        otherA = set(other.alphabet)
+        if selfA != otherA:
+            return False
+        selfP = set([(x[0], x[1], tuple(x[2])) for x in self.productions])
+        otherP = set([(x[0], x[1], tuple(x[2])) for x in other.productions])
+        if selfP != otherP:
+            return False
+        return True
+        
+    def __str__(self):
+        returnStr = "Alphabet: " + str(self.alphabet) + "\n"
+        returnStr += "Root: " + self.root + "\n"
+        returnStr += "Nonterminals: " + str(self.nonterminals) + "\n"
+
+        sortedProds = {n:[] for n in self.nonterminals}
+        for p in self.productions:
+            sortedProds[p[0]].append((p[1],p[2]))
+        returnStr += "Productions: \n"
+        for p in sortedProds:
+            returnStr += "    " + p + " -> "
+            for x in sortedProds[p]:
+                returnStr += str(x[0]) 
+                if len(x[1]) > 0:
+                    returnStr += "("
+                for y in x[1]:
+                    returnStr += str(y) + ","
+                if len(x[1]) > 0:
+                    returnStr = returnStr[:-1]
+                    returnStr += ")"
+                returnStr += " | " 
+            if returnStr[-2] == "|":
+                returnStr = returnStr[:-2]
+            returnStr += "\n"
+        returnStr += "\n"
+        return returnStr
+        
     
     def testCFG(self):
         assert self.root in self.nonterminals
@@ -117,7 +388,7 @@ class CFG:
 
         for p in self.productions:
             if not p[2]: #function has arity 0 so we push to heap
-                print p
+                #print(p)
                 heapq.heappush(heap, (float(self.costs[p[1]]([])), p)) 
             for r in p[2]:
                 nProds[r].append(p)
@@ -152,6 +423,114 @@ class CFG:
             assert dCost in freqs, "Derivation Tree: " + str(der) + " has invalid cost " + str(dCost)
             seenFreqs[dCost] += 1
         assert seenFreqs == freqs
+
+    #determines the min distance from root to each other nonterminal
+    #returns dict {nonterm:dist}
+    def getDistFromRoot(self):
+        distFromRoot = {self.root:0}
+        queue = [self.root]
+        seenTerms = set([self.root])
+        numTerms = 0
+        prods = {n:[] for n in self.nonterminals}
+        for p in self.productions:
+            prods[p[0]].append(p[2])
+        while numTerms < len(queue):
+            nt = queue[numTerms]
+            for rhs in prods[nt]:
+                for r in rhs:
+                    if r not in seenTerms:
+                        queue.append(r)
+                        distFromRoot[r] = distFromRoot[nt] + 1
+                        seenTerms.add(r)
+            numTerms += 1
+        for n in self.nonterminals:
+            assert n in queue, "not all nonterminals are reachable from start"
+        return distFromRoot
+
+    #helper func for enumByDepth
+    #takes in a list of numbers [x_1 ... x_k]
+    #returns all lists (t_1, ..., t_k) where  0 <= t_i < x_i
+    def crossProduct(self, sizes):
+        prods = [[i] for i in range(0, sizes[0])]
+        for i in range(1, len(sizes)):
+            newProds = []
+            for p in prods:
+                for j in range(0, sizes[i]):
+                    newP =copy.copy(p)
+                    newP.append(j)
+                    newProds.append(newP)
+            prods = newProds
+        prods = [tuple(p) for p in prods]
+        return prods
+
+            
+        
+            
+        
+    #enumerates all trees u to a fixed depth
+    def enumByDepth(self, d):
+        dists = self.getDistFromRoot()
+        #pass to get dist from root
+        prods = {n:[] for n in self.nonterminals}
+        for p in self.productions:
+            prods[p[0]].append((p[1],p[2]))
+
+        
+        #treeDepths[A][d] yields list of trees of depth <= d starting from A
+        treeDepths = {A:[[] for _ in range(0,d-dists[A]+1)] for A in self.nonterminals}
+        curr_depth = 0
+        while curr_depth <= d:
+            for A in self.nonterminals:
+                if dists[A] + curr_depth <= d:
+                    if curr_depth > 0:
+                        treeDepths[A][curr_depth] = copy.copy(treeDepths[A][curr_depth-1]) #shouldn't need copy here
+                    for p in prods[A]:
+                        dt = DerivationTree(A, (p[0], len(p[1])), (lambda x: 1 + max(x + [-1]))) #uses depth as cost 
+                        if curr_depth == 0:
+                            if len(p[1]) == 0:
+                                treeDepths[A][curr_depth].append(dt)
+                            continue
+                        if len(p[1]) == 0:
+                            continue
+                        numSubtrees = [len(treeDepths[B][curr_depth-1]) for B in p[1]]
+                        if 0 in numSubtrees:
+                            continue
+                        print numSubtrees
+                        
+                        indices = self.crossProduct(numSubtrees)
+                        for inds in indices:
+                            #print "ind: " + str(inds)
+                            newChildren = [treeDepths[p[1][i]][curr_depth-1][inds[i]] for i in range(0, len(p[1]))]
+
+                            #checks that the constructed tree is of depth curr_depth (and thus is new)
+                            fullDepth = False
+                            for child in newChildren:
+                                assert child.cost != None
+                                assert child.cost <= curr_depth-1, str(child.cost) + str(child)
+                                if child.cost == curr_depth - 1:
+                                    fullDepth = True
+#                                    print str(child) + " " + str(child.cost)
+                            if not fullDepth:
+#                                print "not deep" + str(curr_depth)
+ #                               for x in newChildren:
+#                                    print str(x) + " " + str(x.cost)
+                                continue
+
+ #                           print "SDFSDFSDF" + str(fullDepth)
+                            newdt = copy.copy(dt)
+                            newdt.children = newChildren
+ #                           print "new tree:" + str(newdt) + " " + str(curr_depth)
+                            newdt.computeCost()
+                            treeDepths[A][curr_depth].append(newdt)
+                            #if not (newdt in treeDepths[A][curr_depth]): #inefficient to check every time
+                                #treeDepths[A][curr_depth].append(newdt)
+            curr_depth += 1
+        return treeDepths
+
+    #recursive helper for enumerating from a given non-terminal A
+    #def EnumByDepthRec(self, A, d)
+#        trees = {}
+        
         
     def getTreesFromProds(self, prods, order):
         trees = {}
@@ -196,7 +575,7 @@ class CFG:
 
         maxIters = 1
         for j in range(1,k+1):
-            print str(j) + "------------------------------------"
+            #print(str(j) + "------------------------------------")
             maxIters = j
 
             #old H
@@ -284,11 +663,11 @@ class CFG:
             if not seenNewDer: #no new derivation was added
                 break
         returnTrees = {Y:set([tree for (_,tree) in heapq.nsmallest(k , F[Y][maxIters].dheap)]) for Y in order}
-        print "return vals:"
-        for Y in order:                            
-            print Y + ":"
-            for x in returnTrees[Y]:
-                print str(x.cost) + ": " + str(x) 
+##        print("return vals:")
+##        for Y in order:                            
+##            print(Y + ":")
+##            for x in returnTrees[Y]:
+##                print(str(x.cost) + ": " + str(x))
         return returnTrees
                         
                             
@@ -332,264 +711,78 @@ class DerStruct:
         return len(self.dset) == 0
     def printStruct(self):
         for d in self.dset:
-            print str(d.cost) + ": " + str(d)
+            print(str(d.cost) + ": " + str(d))
     def getDers(self):
         return self.dset
 
 
 
-    
-##a = DerivationTree()
-##a.costFunc = lambda x: 10
-##b = DerivationTree()
-##b.costFunc = lambda x: 20
-##b.func = ('b', 0)
-##c = DerivationTree()
-##c.children = [a, b]
-##c.func = ('f', 2)
-##c.costFunc = (lambda y: y[0] * y[1])
-##assert c.computeCost() == 200
-##
-##d = DerStruct([c,b,a,c])
-##assert d.dPeek() == a
-##assert d.inStruct(a)
-##assert d.dPop() == a
-##assert d.dPop() == b
-##d.dPush(a)
-##assert d.dPop() == a
-##assert d.inStruct(c)
-##assert not d.inStruct(a)
-##assert not d.empty()
-##d.dPop()
-##assert d.empty()
-##
-##a2 = copy.deepcopy(a)
-##assert a == a2
-##assert b != a
-##assert c == c
-##c2 = copy.deepcopy(c)
-##assert c == c2
-##assert c != b
-##
-##g = CFG()
-##g.nonterminals = ["S", "A"]
-##g.alphabet = {"f":1, "a":0}
-##g.productions = [["S", "f", ["A"]], ["A", "a", []]]
-##g.costs = {"f":(lambda x: x[0] + 1), "a":(lambda x: 10)}
-##(mu, minprods, order) = g.Knijkstra()
-##assert mu["S"] == 11
-##
-##trees = g.getTreesFromProds(minprods, order)
-###print trees
-###enums = g.EnumerateStrings(3)
-##
-####
-###S should ignore A
-##g2 = CFG()
-##g2.nonterminals = ["S", "A"]
-##g2.alphabet = {"f":1, "a":0}
-##g2.productions = [["S", "f", ["A"]], ["A", "a", []], ["S", "a", []]]
-##g2.costs = {"f":(lambda x: x[0] + 1), "a":(lambda x: 10)}
-##assert g2.Knijkstra()[0]["S"]==10 #should equal 10
-##
-##g3 = CFG()
-##g3.nonterminals = ["S", "A", "B"]
-##g3.alphabet = {"f":1, "a":0, "b":0}
-##g3.productions = [["S", "f", ["A"]], ["A", "a", []], ["A", "f", ["B"]], ["B", "b", []]]
-##g3.costs = {"f":(lambda x: x[0] + 1), "a":(lambda x: 10), "b":(lambda x: 1)}
-##assert g3.Knijkstra()[0]["S"]==3 #should be 3
-##
 
-##
-##g5 = CFG()
-##g5.nonterminals = ["S", "A"]
-##g5.alphabet = {"f":1, "a":0}
-##g5.productions = [["S", "f", ["S"]], ["S", "f", ["A"]], ["A", "a", []]]
-##g5.costs = {"f":(lambda x: x[0] + 1), "a":(lambda x: 10)}
-##(mu5, minprods5, order5) = g5.Knijkstra()
-###enums = g5.EnumerateStrings(5)
-##print "----------------"
-###enums["S"].printStruct()
-##
-##
-##g6 = CFG()
-##g6.nonterminals = ["S"]
-##g6.alphabet = {"f":2, "a":0}
-##g6.productions = [["S", "f", ["S", "S"]], ["S", "a", []]]
-##g6.costs = {"f":(lambda x: x[0] + x[1]), "a":(lambda x: 1)}
-###enums = g6.EnumerateStrings(5)
+cfg1 = CFG()
 
-##bvg = CFG()
-##bvg.root = "S"
-##bvg.nonterminals = ["S"]
-##bvg.productions = [ ["S", "x", []],
-##                    ["S", "#x0", []],#should actually be 16 0s
-##                    ["S", "#x1", []],
-##                    ["S", "bvnot", ["S"]],
-##                    ["S", "shl1", ["S"]],
-##                    ["S", "shr1", ["S"]],
-##                    ["S", "shr4", ["S"]],
-##                    ["S", "shr16", ["S"]],
-##                    ["S", "bvand", ["S", "S"]],
-##                    ["S", "bvor", ["S", "S"]],
-##                    ["S", "bvxor", ["S", "S"]],
-##                    ["S", "bvadd", ["S", "S"]],
-##                    ["S", "if0", ["S", "S", "S"]]]
-##bvg.alphabet = {p[1]:len(p[2]) for p in bvg.productions}
-##bvg.costs = {a:(lambda x: 1 + sum(x)) for a in bvg.alphabet}
-##bvg.EnumerateStrings(2)
+expression = ['f', [['g', [['a',[]], ['x',[]]]], ['x', []], ['A', []]]]
+#variables = ['x', 'A']
+#cfg1.findVars(variables, expression)
 
-##### Test Grammar 1 ##########
-bvg = CFG()
-bvg.root = "S"
-bvg.nonterminals = ["S"]
-bvg.productions = [ ["S", "x", []],
-                    ["S", "#x0", []],#should actually be 16 0s
-                    ["S", "shl1", ["S"]],
-                    ["S", "shr1", ["S"]],
-                    ["S", "bvand", ["S", "S"]],
-                    ["S", "if0", ["S", "S", "S"]]]
-bvg.alphabet = {p[1]:len(p[2]) for p in bvg.productions}
-bvg.costs = {a:(lambda x: 1 + sum(x)) for a in bvg.alphabet}
-
-##test1 = bvg.EnumerateStrings(6)
-##bvg.checkCostFrequency(test1['S'], {1:2, 2:4})
-##
-##test2 = bvg.EnumerateStrings(19)
-##bvg.checkCostFrequency(test2['S'], {1:2, 2:4, 3:12, 4:1})
-##
-##test3 = bvg.EnumerateStrings(66)
-##bvg.checkCostFrequency(test3['S'], {1:2, 2:4, 3:12, 4:48})
+expression = ['f', [['a',[]], ['x', []], ['A', []]]]
+variables = ['x', 'A']
+#cfg1.findVars(variables, expression)
 
 
-########### Test Grammar 2 ##############
-###same tree has multiple derivations 
-##tg2 = CFG()
-##tg2.root = "S"
-##tg2.nonterminals = ["S", "A"]
-##tg2.productions = [ ["A", "a", []],
-##                    ["S", "f", ["A"]],#should actually be 16 0s
-##                    ["A", "f", ["A"]],
-##                    ["S", "f", ["S"]] ]
-##tg2.alphabet = {p[1]:len(p[2]) for p in tg2.productions}
-##tg2.costs = {a:(lambda x: 1 + sum(x)) for a in tg2.alphabet}
-##test4 = tg2.EnumerateStrings(10)
-##tg2.checkCostFrequency(test4['S'], {i:1 for i in range(2, 12)}) 
-##
-###example from Knuth's paper
-####g4 = CFG()
-####g4.root = "C"
-####g4.nonterminals = ["A", "B", "C"]
-####g4.alphabet = {"a":0, "b":2, "c":1, "d":3, "e":0, "f":2}
-####g4.productions = [["A", "a", []], ["A", "b", ["B", "C"]], ["B", "c", ["A"]], ["B", "d", ["A", "C", "A"]], ["C", "e", []], ["C", "f", ["B", "A"]]]
-####g4.costs = {"a":(lambda x: 4), "b":(lambda x: max(x[0], x[1])), "c":(lambda x: x[0] + 1), "d":(lambda x: x[0] + max(x[1],x[2])), "e":(lambda x: 9), "f":(lambda x: 0.5*(x[0] + x[1] + max(x[0], x[1])))}
-####(mu4, prods4, order4) = g4.Knijkstra()
-####trees4 = g4.getTreesFromProds(prods4, order4)
-#####enums = g4.EnumerateStrings(3)
-##
-##
-############################ SYGUS TESTS #########################
-##
-############ Test Grammar 3 #############
-###multiple nonterminals, uses max cost function
-##tg5 = CFG()
-##tg5.root = "S"
-##tg5.nonterminals = ["S", "A", "B"]
-##tg5.productions = [ ["A", "a", []],
-##                    ["S", "f", ["A", "B"]],
-##                    ["S", "f", ["B", "A"]],
-##                    #["A", "f", ["B", "A"]],
-##                    #["S", "g", ["S"]],
-##                    #["S", "f", ["S", "S"]],
-##                    ["A", "g", ["B"]],
-##                    ["B", "g", ["A"]]]
-##tg5.alphabet = {p[1]:len(p[2]) for p in tg2.productions}
-##tg5.costs = {'f':(lambda x: max(x)), 'g':(lambda x: x[0] + 1), 'a':(lambda x:1)}
-###test5 = tg5.EnumerateStrings(5)
-##tg5.checkCostFrequency(test5['S'], {2:2, 3:2, 4:1}) 
-##
+testLets = CFG()
+testLets.nonterminals = ["S"]
+testLets.alphabet = {'f':2, 'a':0, 'g':1}
+testLets.productions =  [["S", "a", []], ["S", "g", ["S"]]]
+testLets.cost = {"f":(lambda x: x[0] + x[1] + 1), "a":(lambda x: 10), "g":(lambda x: x[0] + 1)}
+testLets.let_productions = [ ["S", [ ["z", ["S",[]]]], "f", [["z",[]],["z",[]]]] ]
+#testLets.processLets()
 
-#### Test Grammar 4: Nand ######
-##My grammar doesn't allow for productions without functions,
-#Replaced vars and constants non-terminals with a production for each var & const
-nand = CFG()
-nand.root = "Start"
-nand.nonterminals = ["Start", "StartAnd"]
-nand.productions = [["Start", "a", []],
-                    ["Start", "b", []],
-                    ["Start", "c", []],
-                    ["Start", "d", []],
-                    ["Start", "true", []],
-                    ["Start", "false", []],
-                    ["Start", "not", ["StartAnd"]],
-                    ["StartAnd", "and", ["Start", "Start"]]]
-nand.alphabet = {p[1]:len(p[2]) for p in nand.productions}
-nand.costs = {a:(lambda x: 1 + sum(x)) for a in nand.alphabet}
-#nand.EnumerateStrings(10)
+varTest1 = VarExpression(function = ("z",0), costFunction = lambda x: 0)
+varTest2 = VarExpression(function = ("z2",0), costFunction = lambda x: 0)
+varTest3 = VarExpression(function = ("A",0), costFunction = lambda x: 0)
+varTest4 = VarExpression(function = ("f",3), costFunction = lambda x: x[0] + x[1] + x[2], childs= [varTest1, varTest2, varTest3])
+varTest4.getVarsNonTs(["z","z2", "z3"], ["S", "A"])
 
-#####Test Grammar 5: ITE ############
-iteg = CFG()
-iteg.root = "Start"
-iteg.nonterminals = ["Start", "BoolExpr"]
-iteg.productions = [["Start", "0", []],
-                    ["Start", "1", []],
-                    ["Start", "2", []],
-                    ["Start", "3", []],
-                    ["Start", "4", []],
-                    ["Start", "5", []],
-                    ["Start", "6", []],
-                    ["Start", "7", []],
-                    ["Start", "8", []],
-                    ["Start", "9", []],
-                    ["Start", "y1", []],
-                    ["Start", "y2", []],
-                    ["Start", "y3", []],
-                    ["Start", "y4", []],
-                    ["Start", "y5", []],
-                    ["Start", "y6", []],
-                    ["Start", "y7", []],
-                    ["Start", "y8", []],
-                    ["Start", "y9", []],
-                    ["Start", "z", []],
-                    ["Start", "+", ["Start", "Start"]],
-                    ["Start", "ite", ["BoolExpr", "Start", "Start"]],
-                    ["BoolExpr", "<", ["Start", "Start"]],
-                    ["BoolExpr", "<=", ["Start", "Start"]],
-                    ["BoolExpr", ">", ["Start", "Start"]],
-                    ["BoolExpr", ">=", ["Start", "Start"]]]
-iteg.alphabet = {p[1]:len(p[2]) for p in iteg.productions}
-iteg.costs = {a:(lambda x: 1 + sum(x)) for a in iteg.alphabet}
-#iteg.EnumerateStrings(30)
+varTest4_2 = VarExpression(function = ("f",3), costFunction = lambda x: x[0] + 2*x[1] + 3*x[2], childs= [varTest3, varTest3, varTest3])
 
+#S -> let [z = f(A, A, A)]] z 
+####letExp = [["S", [["z", varTest4_2]], copy.deepcopy(varTest1)]]
+####letTest = CFG()
+####letTest.nonterminals.append("A")
+####letTest.let_productions = letExp
+####print letTest.let_productions
+####letTest.processLets()
+#print letTest
+#assert processedLets.func[0] == "f" and processedLets.children == varTest4.children
 
-#####Test Grammar 6: Commutative #######
-comm = CFG()
-comm.root = "Start"
-comm.nonterminals = ["Start"]
-comm.productions = [["Start", "+", ["Start", "Start"]],
-                    ["Start", "-", ["Start", "Start"]],
-                    ["Start", "x", []],
-                    ["Start", "y", []]]
-comm.alphabet = {p[1]:len(p[2]) for p in comm.productions}
-comm.costs = {a:(lambda x: 1 + sum(x)) for a in comm.alphabet}
-comm.EnumerateStrings(30)
+varTest5 = VarExpression(function = ("g",2), costFunction = lambda x: max(x)+1, childs = [varTest1, copy.deepcopy(varTest4)])
+varTestZ3 = VarExpression(function = ("z3",0), costFunction = lambda x: 0)
+letExp2 = [["S", [["z", varTest3], ["z2", varTest3]], varTest5],
+        ["A", [["z", varTest3]], varTest1]]
+letTest2 = CFG()
+letTest2.nonterminals.append("A")
+letTest2.productions.append(["A", "a", []])
+letTest2.productions.append(["A", "g", ["A", "A"]])
+letTest2.costs["a"] = lambda x: 10
+letTest2.costs["f"] = lambda x: x[0] + x[1] + x[2]
+letTest2.alphabet["a"] = 0
+letTest2.alphabet["f"] = 3
+letTest2.costs["g"] = lambda x: max(x)+1
+letTest2.let_productions = letExp2
+letTest2.processLets()
+print letTest2
+print letTest2.costs
+x = letTest2.EnumerateStrings(10)
+###assert processedLets2.children[0].func[0]== "z"
+##
+##varTest6 =  VarExpression(function = ("g",2), costFunction = lambda x: sum(x))
+##varTest6.children = [varTest1, varTest2]
+##letExp3 = [["S", [["z2", varTest3], ["z", varTest4]], varTest6]]
+##letTest3 = CFG()
+##letTest3.let_productions = letExp3
+##letTest3.processLets()
+###assert processedLets3.children[0].children[1].func[0] == "A"
 
-(synth-fun countSketch ((x (BitVec 8))) (BitVec 8)
-     (
-	     (Start (BitVec 8) ( x
-	     	     	       	 (let ((tmp (BitVec 8) Start) (m (BitVec 8) ConstBV) (n (BitVec 8) ConstBV))
-                                  (bvadd (bvand tmp m) (bvand (bvlshr tmp n) m))
-                                  )
-                
-		)
-	     )
-	     (ConstBV (BitVec 8) (
-	       #x00 #xAA #xBB #xCC #xDD #xEE #xFF #xA0 #xB0 #xC0 #xD0 #xE0 #xF0 #x01 #x02 #x04
-    		 )
-	     
-	     )
-	   )
-)
 
 
 
@@ -597,3 +790,18 @@ comm.EnumerateStrings(30)
 #H initialized to Min tree plus all trees with production diversions at the root
 #need to track used elts of H since those can't be popped back into H
 #need to find min elt in heap but also look up in set.
+
+
+#nick
+    #changes np-complete argument
+    
+
+#Space complexity?
+#discussion k^2 is actually k*MAXTREESIZE
+#Look up other papers on enumerating from cost
+#cut down on space complexity
+#compare our costs to Loris' QSygus paper
+#handwave maxtree*k
+#add section on results?
+#add polydegree discussion?
+
