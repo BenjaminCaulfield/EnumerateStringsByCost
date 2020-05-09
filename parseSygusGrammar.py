@@ -2,6 +2,7 @@ import re
 import cfg
 import copy
 import os
+import time
 
 def push(obj, l, depth):
    # print str(obj)
@@ -32,8 +33,16 @@ def parse_parentheses(inStr):
     depth = 0
 
     try:
+        inString = None
         for char in s:
-            if char == '(':
+            if char == '"' and not inString:
+                inString = '"'
+            elif char == '"':
+                push(inString+'"', groups, depth)
+                inString = None
+            elif inString:
+                inString += char
+            elif char == '(':
                 push([""], groups, depth)
                 depth += 1
             elif char == ')':
@@ -55,7 +64,9 @@ def removeExcess(l):
     l2 = [removeExcess(sub) for sub in l if not (sub == "" or sub == "\n" or sub == "\t")]
     return l2
 
-def parseAllFiles():
+#reads all grammars and writes enumeration results of form:
+#filename (k time min_cost max_cost mean_cost) (k2 ...) ... 
+def runAllFiles(kValues):
     numGoodFiles = 0
     for (root, _, files) in os.walk("./benchmarks"):
         for f in files:
@@ -71,7 +82,29 @@ def parseAllFiles():
                 #print filestring
                 #return
                 if re.search("synth-fun", filestring) and not re.search("(define-fun.*synth-fun)|(synth-fun.*let)", filestring, re.DOTALL):
+                    print filename
                     g = parsefile(filename)
+                    if not g:
+                        print filename, " doesnt specify grammar."
+                        continue
+                    g.makeConsistent()
+                    for k in kValues:
+                        funcTime = time.time() #finds runtime of enumerate strings
+                        trees = g.EnumerateStrings(k)
+                        funcTime = time.time() - funcTime
+                        minCost = float('inf')
+                        maxCost = float('-inf')
+                        sumCost = 0.0
+                        for tree in trees[g.root]:
+                            minCost = min(minCost, tree.cost)
+                            maxCost = max(maxCost, tree.cost)
+                            sumCost+= tree.cost
+                        writeFile = open("enumerationTests.txt", "a")
+                        writeFile.write("(" + str(k) + " " + str(round(funcTime, 3)) + " " + str(minCost) + " " + str(maxCost) + " " + str(round(sumCost / float(len(trees[g.root])), 3)) + ") ")
+                        writeFile.close()
+                    writeFile = open("enumerationTests.txt", "a")
+                    writeFile.write(str(len(g.nonterminals)) + " " + str(len(g.productions)) + " " + str(len(g.alphabet)) + " " + str(max(g.alphabet.values())) + " " + str(len([a for a in g.alphabet if g.alphabet[a] == 0])) + " " + filename + "\n")
+                    writeFile.close()
                     
 
 #returns a cfg represented the relevant sygus grammar
@@ -85,6 +118,9 @@ def parsefile(filename):
     # close the file
     afile.close()
 
+    return parseString(filestring)
+
+def parseString(filestring):
     parsed_file = parse_parentheses(filestring)
     parsed_file = removeExcess(parsed_file)
 
@@ -104,6 +140,8 @@ def parsefile(filename):
 
     synthG = cfg.CFG()
     synthfunc = parsed_file[synth_pos]
+    if len(synthfunc) < 5: #grammar isn't specified
+        return None
     synthG.root = synthfunc[4][0][0]
     synthG.nonterminals = []# [synthG.root]
     for nontDef in synthfunc[4]:
@@ -140,7 +178,7 @@ def parsefile(filename):
                     synthG.alphabet[prod[0]] = len(prod) - 1 #, "Multiple arities found in " + str(prod[0])
                 else:
                     #print str(prod)
-                    assert synthG.alphabet[prod[0]] == len(prod) - 1, "Multiple arities found in " + str(prod[0])
+                    assert synthG.alphabet[prod[0]] == len(prod) - 1, "Multiple arities found in '" + str(prod[0]) + "'"
                 for p in prod[1:]:
                     #rhs is nested function. e.g., S -> g(g(A))
                     #Adds new nonterminal B and yield S -> g(B) , B -> g(A)
@@ -218,10 +256,49 @@ defstring = """
 """
 
 
+stringdef = """
+(synth-fun f ((name String)) String
+
+    ((Start String (ntString))
+
+     (ntString String (name "+" "-" "." ")" ")"
+
+                       (str.++ ntString ntString)
+
+                       (str.replace ntString ntString ntString)
+
+                       (str.at ntString ntInt)
+
+                       (int.to.str ntInt)
+
+                       (str.substr ntString ntInt ntInt)))
+
+      (ntInt Int (0 1 2 3 4 5
+
+                  (+ ntInt ntInt)
+
+                  (- ntInt ntInt)
+
+                  (str.len ntString)
+
+                  (str.to.int ntString)
+
+                  (str.indexof ntString ntString ntInt)))
+
+      (ntBool Bool (true false
+
+                    (str.prefixof ntString ntString)
+
+                    (str.suffixof ntString ntString)
+
+                    (str.contains ntString ntString)))))
+
+"""
+
 #cfg1 = parsefile("testfile.sl")
 #cfg2 = parsefile("testfile2.sl")
 #cfg3 = parsefile("testA->B.sl")
-cfg4 = parsefile("nested_func_test.sl")
+#cfg4 = parsefile("nested_func_test.sl")
 
 
 

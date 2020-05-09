@@ -179,7 +179,61 @@ class CFG:
     let_productions = [] #list of productions/ let-expressions of form [N, [[v1, e1], [v2, e2],...], f, [e1', e2',....]]  
     #The pairs [vi, ei] are the settings let(vi = ei) in the let statements
     #the e's are lists of form [f, [e'_1, ...]] containing variables, nonterminals, and terminals at the leaves
-    
+
+    def __init__(self):
+        self.testCons = True
+        self.root = "Start"
+        self.nonterminals = ["Start"]
+        self.alphabet = {}
+        self.productions = []
+        self.costs = {}
+
+    #checks alphabet, costs, productions, nonterminals, and root are consistent with each other
+    #returns True if they are, otherwise makes them consistent
+    #doesn't check that every nonterminal/symbol appears in a production
+    def makeConsistent(self):
+        consistent = True
+        if self.root not in self.nonterminals:
+            self.nonterminals.append(root)
+            consistent = False
+        nonTset = set(self.nonterminals)
+        oldProductions = self.productions
+        self.productions = []
+        for prod in oldProductions:
+            if prod[0] not in nonTset:
+                nonTset.add(prod[0])
+                consistent = False
+            if prod[1] not in self.alphabet:
+                self.alphabet[prod[1]] = len(prod[2])
+                consistent = False
+            assert self.alphabet[prod[1]] == len(prod[2]), "multiple arities listed for " + prod[1]
+        for prod in oldProductions:
+            newRHS = []
+            for nonT in prod[2]:
+                if nonT not in nonTset: #assumes nonT is terminal. Creates new nonterminal A_nonT and production pointing to nonT
+                    self.alphabet[nonT] = 0
+                    newNT = "A_" + nonT
+                    newRHS.append(newNT)
+                    nonTset.add(newNT)
+                    newProd = [newNT, nonT, []]
+                    if newProd not in self.productions:
+                        self.productions.append(newProd)
+                    consistent = False
+                else:
+                    newRHS.append(nonT)
+            self.productions.append([prod[0], prod[1], newRHS])
+        self.nonterminals = list(nonTset)
+        for sym in self.alphabet:
+            if sym not in self.costs.keys():
+                consistent = False
+                if self.alphabet[sym] == 0:
+                    self.costs[sym] = lambda x: 1
+                else:
+                    self.costs[sym] = lambda x:1 + sum(x)
+        for cost in self.costs:
+            assert cost in self.alphabet
+        return consistent
+        
     #helper function to processLetStatements
     #finds location of all variables and let statements in expression [f, [e'_1, ...]] 
     #represents locations as list of children to follow from root e.g., location of x in f(a, g(x,b)) is [1, 0]
@@ -225,7 +279,8 @@ class CFG:
                     assert len(letProd[2].children) == 0
                     assert varDef[0] == letProd[2].func[0] #current variable defined is rhs of let-expression
                     letProd[2].func = (varDef[1].func[0], len(varDef[1].children)) #replaces variable with variable rhs of let-expression
-                    letProd[2].children = copy.deepcopy(varDef[1].children) #DO I NEED DEEPCOPY HERE?
+                    letProd[2].children = copy.copy(varDef[1].children)
+                    #letProd[2].children = copy.deepcopy(varDef[1].children) #DO I NEED DEEPCOPY HERE?
                 else:
                     newSubs = []
                     for subExpr in letProd[2].children:
@@ -767,12 +822,14 @@ letTest2.costs["a"] = lambda x: 10
 letTest2.costs["f"] = lambda x: x[0] + x[1] + x[2]
 letTest2.alphabet["a"] = 0
 letTest2.alphabet["f"] = 3
+letTest2.alphabet["SDF"] = 69
 letTest2.costs["g"] = lambda x: max(x)+1
 letTest2.let_productions = letExp2
-letTest2.processLets()
-print letTest2
-print letTest2.costs
-x = letTest2.EnumerateStrings(10)
+#letTest2.processLets()
+#print letTest2
+#print letTest2.costs
+#x = letTest2.EnumerateStrings(10)
+
 ###assert processedLets2.children[0].func[0]== "z"
 ##
 ##varTest6 =  VarExpression(function = ("g",2), costFunction = lambda x: sum(x))
