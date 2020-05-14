@@ -2,6 +2,19 @@ import math
 import heapq
 import copy
 import cfg
+import time
+
+global max_heap_sizef
+max_heap_size = 0
+tequiv = 0
+tnequiv = 0
+push_time = 0.0
+ldersTime = 0.0
+knijk_time = 0.0
+copyTime = 0.0
+usedTtimes = 0
+notusedTtimes = 0
+
 
 class DerivationTree:
     root = "S" #Name of root nonterminal
@@ -13,16 +26,19 @@ class DerivationTree:
 
     assert len(children) == func[1]
 
-    def __init__(self, rootSymbol = "S", function = ("a", 0), costFunction = lambda x: x, childs = []):
+    def __init__(self, rootSymbol = "S", function = ("a", 0), costFunction = lambda x: x, childs = [], getCost = False):
         self.root = rootSymbol
         self.func = function
         self.costFunc = costFunction
         self.children = childs
-        self.computeCost()
+        if getCost:
+            self.computeCost()
 
     #checks if two derivation trees are equal
     #doesnt check cost functions (Turing dropped the ball)
     def __eq__(self, other, checkCost = False):
+        if self is other:
+            return True
         if(checkCost):
             if(not self.cost):
                 self.computeCost()
@@ -229,7 +245,8 @@ class CFG:
                 if self.alphabet[sym] == 0:
                     self.costs[sym] = lambda x: 1
                 else:
-                    self.costs[sym] = lambda x:1 + sum(x)
+                    self.costs[sym] = lambda x:1 + sum(x) #checks size
+#                    self.costs[sym] = lambda x: 1 + max(x) #checks depth
         for cost in self.costs:
             assert cost in self.alphabet
         return consistent
@@ -609,12 +626,13 @@ class CFG:
         mintrees = self.getTreesFromProds(minprods, order)
 
         #Set of trees that are min or have one non-optimal production (At the root)
-        F1 = {Y:DerStruct([mintrees[Y]]) for Y in order}
+        F1 = {Y:DerStruct(k, [mintrees[Y]]) for Y in order}
         for p in self.productions:
             F1[p[0]].dPush(DerivationTree(p[0],
                                           (p[1], len(p[2])),
                                           self.costs[p[1]],
-                                          [copy.deepcopy(mintrees[c]) for c in p[2]]))
+                                          [copy.deepcopy(mintrees[c]) for c in p[2]],
+                                          True))#!! do we need a deepcopy?
         #old F
         #F = {Y:[DerStruct([mintrees[Y]])] for Y in order}
 
@@ -628,6 +646,9 @@ class CFG:
         #Fprime = {Y:[DerStruct([mintrees[Y]])] for Y in order}
         #kk = Fprime[order[0]][0].dheap
 
+        changedNonTsLast = {N:True for N in self.nonterminals} #tracks which nonterminals had updated heaps in the last round
+        changedNonTsCurrent = {N:False for N in self.nonterminals} #same, but in current round
+        
         maxIters = 1
         for j in range(1,k+1):
             #print(str(j) + "------------------------------------")
@@ -636,7 +657,7 @@ class CFG:
             #old H
             #H = {Z:copy.deepcopy(F[Z][j-1]) for Z in order}
 
-            H = {Z:DerStruct(F[Z][j-1].dset) for Z in order}
+            H = {Z:F[Z][j-1].copy() for Z in order}
 
             
             usedH = set()
@@ -646,10 +667,11 @@ class CFG:
             seenNewDer = False
             for Y in order:
 
-                F[Y].append(DerStruct(F[Y][j-1].dset))
+                F[Y].append(F[Y][j-1].copy()) ##!!copy the der instead of creating it from scratch
 
                 #F[Y].append(copy.deepcopy(F[Y][j-1]))
 
+                
 
                 #Fprime[Y].append(copy.deepcopy(F[Y][j-1])) #possibly dont need deepcopy here. set might be wrong thing to get
                 i = 0
@@ -660,102 +682,145 @@ class CFG:
                     usedH.add(T)
                     #print "T: " + str(T)
                     assert T.root == Y
-                    #if(not F[Y][j].inStruct(T)):
-                    #    seenNewDer = True
+                    if(not F[Y][j].inStruct(T)):
+                        changedNonTsCurrent[T.root] = True
+                        seenNewDer = True
                     F[Y][j].dPush(T)
+                    #seenNewDer = (seenNewDer or F[Y][j].dPush(T))
+                    #F[Y][j].dPush(T)
                     #algorithm the Tl values are taken from different sets depending on whether the root production is optimal
                     optProd = (T.getRootProd() == minprods[Y])
                     usedT = False
                     for l in range(0, T.func[1]): #for each argument to root function
-                        seenDers = []
+                        if not changedNonTsLast[T.children[l].root]:
+                            continue
+                        #seenDers = []
                         newDer = False
                         lDers = []
                         #print str(T)
-                        if optProd:
-                            lDers = F[T.children[l].root][j]
-                        else:
-                            #print T.getRootProd()
-                            lDers = F[T.children[l].root][j-1]
+                        if optProd: #production is optimal, so we consider children dist j away
+                            lDers = F[T.children[l].root][j].copy()
+                        else: #production is not optimal, so we consider children dist j-1 away
+                            #print T.getRootProd() 
+                            lDers = F[T.children[l].root][j-1].copy()
                         #print str(T)
+
+                        #ldt = time.time()
                         while not lDers.empty():
-                            Tl = lDers.dPop()
-                            seenDers.append(Tl)
-                            #T2 = copy.deepcopy(T)
+                            Tl = lDers.dPop() #!! is this a problem? Are we destroying all of F[T.children][j / j-1] ?
+
+                            if(Tl == T.children[l]):
+                                continue
+
                             newChildren = copy.copy(T.children)
                             newChildren[l] = copy.copy(Tl)
                             
-#                            newChildren = copy.deepcopy(T.children)
- #                           newChildren[l] = copy.deepcopy(Tl)
-
+                            #cT = time.time()
                             T2 = DerivationTree(T.root,
                                                 T.func,
                                                 T.costFunc,
-                                                newChildren)
-                            if(T2 == T):
-                                continue
-                            #print "T2: " + str(T2)
-                            if((not H[Y].inStruct(T2)) and (not T2 in usedH)):
-                                T2.computeCost(True)
-                                #print str(T) + "--" +  str(Tl)
-                                #print str(T2) + " " + str(T2.cost)
+                                                newChildren,
+                                                True)
+                            #cT = time.time() - cT
+                            #global copyTime
+                            #copyTime += cT
+
+##                            if(T2 == T): #!! should I compute cost to check equivalence?
+##                                global tequiv
+##                                tequiv = tequiv + 1
+##                                continue
+##                            else:
+##                                global tnequiv
+##                                tnequiv = tnequiv + 1
+#                            b1 = T2 in usedH
+#                            T2.computeCost(False)#
+#                            b2 = T2 in usedH
+                           # assert b1 == b2, str(T2)
+                            if((not H[Y].inStruct(T2)) and (not T2 in usedH)):##!! can we make this test work without computing the cost of T2?
+                                #T2.computeCost(False)#T2.computeCost(True) #!! uncomment and make equiv not calculate equiv.
                                 H[Y].dPush(T2)
-                                #uncomment this#
-                                #print "new"
-                                #print "F[Y][j]:"
-                                #F[Y][j].printStruct()
-                                #print "H[Y]:"
-                                #H[Y].printStruct()
                                 newDer = True
+                                changedNonTsCurrent[T.root] = True
                                 break
-                        for sD in seenDers:
-                            lDers.dPush(sD)
+                        #global ldersTime
+                        #ldersTime += time.time() - ldt
                         if newDer:
                             usedT = True
                     if usedT: #should we just increment i regardless?
                         i += 1
-                if F[Y][j].dset != F[Y][j-1].dset:
-                    seenNewDer = True
+                        #global usedTtimes
+                        #usedTtimes = usedTtimes + 1
+                    else:
+                        i += 1
+                        #global notusedTtimes
+                        #notusedTtimes = notusedTtimes + 1
+#                if F[Y][j].dset != F[Y][j-1].dset:
+ #                   seenNewDer = True
             if not seenNewDer: #no new derivation was added
+                #print "depth is: " + str(j)
                 break
+            changedNonTsLast = changedNonTsCurrent
+            changedNonTsCurrent = {N:False for N in self.nonterminals}
         returnTrees = {Y:set([tree for (_,tree) in heapq.nsmallest(k , F[Y][maxIters].dheap)]) for Y in order}
 ##        print("return vals:")
 ##        for Y in order:                            
 ##            print(Y + ":")
 ##            for x in returnTrees[Y]:
 ##                print(str(x.cost) + ": " + str(x))
+       # global max_heap_size
+       # print "MAX_HEAP:", str(max_heap_size)
+       # print "T == T2", str(tequiv)
+       # print "T != T2", str(tnequiv)
+       # global copyTime
+       # print "Copy Time: ", str(copyTime)
+       # global ldersTime
+       # print "lders_time: " + str(ldersTime)
+       # print "used vs not used T ", str(usedTtimes), " ", str(notusedTtimes)
         return returnTrees
                         
-                            
+#phone-2.sl large heap size
+#array_sum_2_5-Q.sl
 
-                    
-                    
-                
-                
 #LIKELY NOT MOST EFFICIENT. TEST ON DIFFERENCE DATASTRUCTS. MAYBE JUST USE SETS???
 #Structure used for F and F'
 #maintains heap and set for efficient min and membership checks
 #heap may contain duplicates, but set will not, there can be `false negatives' on inStruct
 class DerStruct:
+    k = -1 #tracks the value of k. tries to keep size of heap under k elements.
+    maxCostDer = float('-inf') #stores the cost of the largest element (used in dPush)
     dheap = [] #used to find min-cost derivation
     dset = set() #used to check if tree is in set
-    def __init__(self, ders = []):
+    def __init__(self, newk, ders = []):
         self.dheap = []
         self.dset = set()
+        self.k = newk
         for d in ders:
-            self.dPush(d)
-    #pushed derivation to struct
-    def dPush(self, d):
+            self.dPush(d) #maxed = self.dPush(d) # works if list is sorted, o/w can't guarantee there aren't smaller elements later
+            #if maxed: #stops pushing if k elements are pushed.
+               # return 
+    #pushes derivation to struct
+    #returns False if the heap size is k and the pushed der has bigger cost than the max element in the heap (doesn't push in this case)
+    #if the heap is bigger than k but the pushed element is smaller than the max size, then pushes the element (and doesnt remove larger element) #!! is it faster if we remove the larger element?
+    def dPush(self, d): 
         if not d.cost:
-                d.computeCost()
+            d.computeCost()
+        if len(self.dset) >= self.k and d.cost > self.maxCostDer: #pushing a bigger element than every element in struct. and struct is maxed out.
+            return False
         if(not d in self.dset):
             heapq.heappush(self.dheap, (d.cost, d))
             self.dset.add(d)
+            self.maxCostDer = max(self.maxCostDer, d.cost)
+            #global max_heap_size
+            #max_heap_size = max(max_heap_size, len(self.dset))
+        return True
     def inStruct(self, d):
         return d in self.dset
     #pops min elt and removes it from set
     def dPop(self):
         d = heapq.heappop(self.dheap)
         self.dset.remove(d[1])
+        if self.empty():
+            self.maxCostDer = float('-inf') #resets maximum derivation if heap is empty ##!! do i need this?
         return d[1]
     def dPeek(self):
         assert len(self.dheap) > 0, "can't peek at empty list"
@@ -769,9 +834,59 @@ class DerStruct:
             print(str(d.cost) + ": " + str(d))
     def getDers(self):
         return self.dset
+    def copy(self): #returns a shallow copy of self
+        #newStruct = DerStruct([x[1] for x in self.dheap])
+        newStruct = DerStruct(self.k, [])
+        newStruct.dheap = copy.copy(self.dheap)
+        newStruct.dset = copy.copy(self.dset)
+        newStruct.maxCostDer = self.maxCostDer
+        return newStruct
+"""                   
+                    
+                
+                
+#Struct with just heaps
+#Structure used for F and F'
+#maintains heap and set for efficient min and membership checks
+#heap may contain duplicates, but set will not, there can be `false negatives' on inStruct
+class DerStruct:
+    dheap = [] #used to find min-cost derivation
+    #dset = set() #used to check if tree is in set
+    def __init__(self, ders = []):
+        self.dheap = []
+#        self.dset = set()
+        for d in ders:
+            self.dPush(d)
+    #pushed derivation to struct
+    def dPush(self, d):
+        if not d.cost:
+                d.computeCost()
+        if(not (d.cost, d) in self.dheap):
+            heapq.heappush(self.dheap, (d.cost, d))
+#            self.dset.add(d)
+    def inStruct(self, d):
+        return d in dheap
+        #return d in self.dset
+    #pops min elt and removes it from set
+    def dPop(self):
+        d = heapq.heappop(self.dheap)
+        #self.dset.remove(d[1])
+        return d[1]
+    def dPeek(self):
+        assert len(self.dheap) > 0, "can't peek at empty list"
+        return self.dheap[0][1] #just pushes tree, not tuple
+    def empty(self): #dheap can contain duplicates but dset will not. so returns size of dset
+        #if(len(self.dheap) == 0):
+         #   assert len(self.dset) == 0, "heap in Derstruct is empty, but set is not"
+        return len(self.dheap) == 0
+    def printStruct(self):
+        for d in self.dheap:
+            print(str(d.cost) + ": " + str(d))
+    def getDers(self):
+        return self.dheap
 
 
-
+"""
 
 cfg1 = CFG()
 
@@ -822,7 +937,7 @@ letTest2.costs["a"] = lambda x: 10
 letTest2.costs["f"] = lambda x: x[0] + x[1] + x[2]
 letTest2.alphabet["a"] = 0
 letTest2.alphabet["f"] = 3
-letTest2.alphabet["SDF"] = 69
+letTest2.alphabet["SDF"] = 6
 letTest2.costs["g"] = lambda x: max(x)+1
 letTest2.let_productions = letExp2
 #letTest2.processLets()
