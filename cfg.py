@@ -4,16 +4,66 @@ import copy
 import cfg
 import time
 
-global max_heap_sizef
-max_heap_size = 0
-tequiv = 0
-tnequiv = 0
-push_time = 0.0
-ldersTime = 0.0
-knijk_time = 0.0
-copyTime = 0.0
-usedTtimes = 0
-notusedTtimes = 0
+#cost value that caps the number of occurrences of different symbols
+#also maintains a "main cost", so the cost used by the algorithm is the main cost unless the symbol cap is reached.
+#
+class symCap:
+    cost = 0
+    caps = {} #caps[f] is the number of occurences of f that are allowed.
+    occurs = {} #counts the number of occurrences for each symbol
+
+    
+    def __init__(self, symCaps, initCost = 0, initOccurs = False):
+        self.cost = initCost
+        self.caps = symCaps
+        if initOccurs:
+            self.occurs = initOccurs
+        else:
+            self.occurs = {a:0 for a in symCaps.keys()}
+
+    def __str__(self):
+        retStr = "Main Cost: " + str(self.cost) + "\n"
+        retStr += "Occurences/Caps: "
+        for a in self.caps:
+            retStr += str(a) + ":" + str(self.occurs[a]) + "/" + str(self.caps[a]) + " "
+        return retStr + "\n"
+
+    def __hash__(self):
+        return hash(self.cost) + sum([ hash(key)*hash(value) for key, value in self.occurs.iteritems()])
+
+    def applyFunc(self, func, costs, sym):
+        newCost = func([c.cost for c in costs])
+
+        newOcc = {}
+        for a in self.caps:
+            newOcc[a] = sum([c.occurs[a] for c in costs])
+            if sym == a:
+                newOcc[a] = newOcc[a] + 1
+            if newOcc[a] > self.caps[a]:
+                newCost = float('inf')
+
+        return symCap(self.caps, newCost, newOcc)
+
+    def __lt__(self, other): #compares costs lexicographically with the main cost first
+        if other == float('inf'):
+            return True
+        if other == float('-inf'):
+            return False
+        if self.cost < other.cost:
+            return True
+        if self.cost > other.cost:
+            return False
+        for s in self.caps:
+            if self.occurs[s] < other.occurs[s]:
+                return True
+            if self.occurs[s] > other.occurs[s]:
+                return False
+        return False #they're equal
+    def __eq__(self, other):
+        if other == float('inf') or other == float('-inf'):
+            return False
+        assert self.caps == other.caps
+        return self.cost == other.cost and self.occurs == other.occurs
 
 
 class DerivationTree:
@@ -239,18 +289,42 @@ class CFG:
                     newRHS.append(nonT)
             self.productions.append([prod[0], prod[1], newRHS])
         self.nonterminals = list(nonTset)
+#        caps = {a[0]:1 for a in self.alphabet}
+ #       cap = symCap(caps)
+        return consistent
+
+    def setCostsToDepth(self):
         for sym in self.alphabet:
             if sym not in self.costs.keys():
-                consistent = False
+                if self.alphabet[sym] == 0:
+                    self.costs[sym] = lambda x: 1
+                else:
+                    self.costs[sym] = lambda x: 1 + max(x) #checks depth
+        #for cost in self.costs:
+#            assert cost in self.alphabet
+
+    def setCostsToSize(self):
+        for sym in self.alphabet:
+            if sym not in self.costs.keys():
                 if self.alphabet[sym] == 0:
                     self.costs[sym] = lambda x: 1
                 else:
                     self.costs[sym] = lambda x:1 + sum(x) #checks size
-#                    self.costs[sym] = lambda x: 1 + max(x) #checks depth
+
+    def setCostsWithCaps(self, cap):
+        capper = symCap({a:cap for a in self.alphabet})
+        for sym in self.alphabet:
+            if sym not in self.costs.keys():
+                if self.alphabet[sym] == 0:
+                    self.costs[sym] = lambda y: capper.applyFunc(lambda x: 1, y, sym)
+                else:
+                    self.costs[sym] = lambda y: cap.applyFunc(lambda x: sum(x) + 1, y, sym) #checks size
+                    #self.costs[sym] = lambda y: cap.applyFunc(lambda x: max(x) + 1, y, sym) #checks depth
         for cost in self.costs:
             assert cost in self.alphabet
-        return consistent
+
         
+
     #helper function to processLetStatements
     #finds location of all variables and let statements in expression [f, [e'_1, ...]] 
     #represents locations as list of children to follow from root e.g., location of x in f(a, g(x,b)) is [1, 0]
@@ -461,7 +535,9 @@ class CFG:
         for p in self.productions:
             if not p[2]: #function has arity 0 so we push to heap
                 #print(p)
-                heapq.heappush(heap, (float(self.costs[p[1]]([])), p)) 
+#                heapq.heappush(heap, (float(self.costs[p[1]]([])), p))#!!removed float
+                heapq.heappush(heap, (self.costs[p[1]]([]), p)) 
+
             for r in p[2]:
                 nProds[r].append(p)
         while len(D) < len(self.nonterminals):
@@ -480,7 +556,8 @@ class CFG:
                 rset.remove(prod[0])
                 if rset.issubset(D): #new production with all rhs nonterminals minimized
                     Dvals = [mu[N] for N in uProd[2]]
-                    prodCost = float(self.costs[uProd[1]](Dvals))
+                    #prodCost = float(self.costs[uProd[1]](Dvals))!! removed float
+                    prodCost = self.costs[uProd[1]](Dvals)
                     heapq.heappush(heap, (prodCost, uProd))
             minprods[prod[0]] = prod
             D.add(prod[0])

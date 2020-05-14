@@ -70,68 +70,54 @@ randvals = [1757, 3909, 2700, 1631, 3039, 4062, 290, 3374, 3068, 3625, 2317, 187
 
 
 #reads all grammars and writes enumeration results of form:
-#filename (k time min_cost max_cost mean_cost) (k2 ...) ... 
-def runAllFiles(kValues):
+#filename (k time min_cost max_cost mean_cost) (k2 ...) ...
+#also writes just runtimes to allGrammarTests_k
+#returns list of function names and average times, sorted by times.
+def runAllFiles(k):
     runtimes = []
-    index = -1
-    innerIndex = -1
-    goodfile = open("goodfile", mode='r')
-    goodCosts = eval(goodfile.read())
-    #goodfile.write("[")
-    for (root, _, files) in os.walk("./benchmarks"):
+    numRepeats = 1 #number of times enumerate is repeated for a single file
+    for (root, _, files) in os.walk("./usedGrammars"):# replace with os.walk("./benchmarks") to run through all files
         for f in files:
             if f.endswith(".sl"):
                 filename = os.path.join(root,f)
                 afile = open(filename,mode='r')
                 filestring = afile.read()
                 afile.close()
-
-#                p = filestring.find("synth-fun")
-#                if not p:
-#                    continue
-                #print filestring
-                #return
                 if re.search("synth-fun", filestring) and not re.search("(define-fun.*synth-fun)|(synth-fun.*let)", filestring, re.DOTALL):
-                    #print filename
                     g = parsefile(filename)
                     if not g:
-                        #print filename, " doesnt specify grammar."
+                        assert False
                         continue
                     g.makeConsistent()
-                    index += 1
-                    if index not in randvals:
-                        continue
-                    innerIndex += 1
-                    for k in kValues:
+                    g.setCostsToDepth() #change to g.setCostsToSize() to get min-size terms
+                    simpleWrite = open("allGrammarTests_" + str(k) + ".txt", "a") #name of the file that just stores runtimes 
+                    tests = []
+                    for _ in range(0,numRepeats):
                         funcTime = time.time() #finds runtime of enumerate strings
                         trees = g.EnumerateStrings(k)
                         funcTime = time.time() - funcTime
-                        runtimes.append(funcTime)
-                        minCost = float('inf')
-                        maxCost = float('-inf')
-                        sumCost = 0.0
-                        for tree in trees[g.root]:
-                            minCost = min(minCost, tree.cost)
-                            maxCost = max(maxCost, tree.cost)
-                            sumCost+= tree.cost
-                        writeFile = open("enumerationTests.txt", "a")
-                        writeFile.write("(" + str(k) + " " + str(round(funcTime, 3)) + " " + str(minCost) + " " + str(maxCost) + " " + str(round(sumCost / float(len(trees[g.root])), 3)) + ") ")
-                        writeFile.close()
-
-                        print filename
-#                        costs = [x.cost for x in trees[g.root]]
-#                        costs.sort()
-#                        print costs
-#                        assert costs == goodCosts[innerIndex], goodCosts[innerIndex]
-                        #goodfile.write(str(costs) + ",")
-
-                        #print filename, costs
-                        #goodfile.close()
-                        #return
-                        
+                        tests.append(funcTime)
+                    
+                    runtimes.append((numpy.mean(tests), f))
+                    minCost = float('inf')
+                    maxCost = float('-inf')
+                    sumCost = 0.0
+                    for tree in trees[g.root]:
+                        minCost = min(minCost, tree.cost)
+                        maxCost = max(maxCost, tree.cost)
+                        sumCost+= tree.cost
+                    writeFile = open("enumerationTests.txt", "a")
+                    writeFile.write("(" + str(k) + " " + str(round(numpy.mean(tests), 3)) + " " + str(minCost) + " " + str(maxCost) + " " + str(round(sumCost / float(len(trees[g.root])), 3)) + ") ")
+                    writeFile.close()
                     writeFile = open("enumerationTests.txt", "a")
                     writeFile.write(str(len(g.nonterminals)) + " " + str(len(g.productions)) + " " + str(len(g.alphabet)) + " " + str(max(g.alphabet.values())) + " " + str(len([a for a in g.alphabet if g.alphabet[a] == 0])) + " " + filename + "\n")
                     writeFile.close()
+
+                    simpleWrite.write(str(numpy.mean(tests)) + "\n")
+                    simpleWrite.close()
+                    print f + ": " + str(numpy.mean(tests))
+
+    runtimes.sort()
     return runtimes
 #    goodfile.close()
 
@@ -326,28 +312,78 @@ stringdef = """
 
 """
 
+def getDistinctGrammars():
+    i = 0
+    seenGrammars = []
+    filenames = set() #files that have been written to new folder
+    for (root, _, files) in os.walk("./benchmarks"):
+        for f in files:
+            #if i >= 3:
+#                return
+            if f in filenames:
+                continue
+            if f.endswith(".sl"):
+                filename = os.path.join(root,f)
+                afile = open(filename,mode='r')
+                filestring = afile.read()
+                afile.close()
+
+#                p = filestring.find("synth-fun")
+#                if not p:
+#                    continue
+                #print filestring
+                #return
+                if re.search("synth-fun", filestring) and not re.search("(define-fun.*synth-fun)|(synth-fun.*let)", filestring, re.DOTALL):
+                    #print filename
+                    g = parsefile(filename)
+                    if not g:
+                        #print filename, " doesnt specify grammar."
+                        continue
+                    g.makeConsistent()
+                    if g not in seenGrammars:
+                        seenGrammars.append(g)
+                        newFile = open("./usedGrammars/" + f, 'w+')
+                        newFile.write(filestring)
+                        newFile.close()
+                        filenames.add(f)
+                        i += 1
+                
+
+#used for timing a single file. 
 def timeFile():
-    #global max_heap_size
-    #max_heap_size = 0
-    #global tequiv
-    #tequiv = 0
-    g = parsefile("./Hard_tests/phone-2.sl")
+    g = parsefile("./usedGrammars/phone-2-long-repeat.sl") #name of the file containing the grammar
     g.makeConsistent()
+    g.setCostsToDepth()
+    #g.setCostsToSize() #uncomment (and comment out line above) to set costs to size
     print g
     runtime = 0.0
-    k = 20
-    filename = open("phone_tests_size", "a")
-    while runtime <= 600:
-        startTime = time.time()
-        g.EnumerateStrings(k)
-        runtime = time.time() - startTime
-        writeString = str(k) + " " + str(round(runtime,4))
+    k = 20 #starting k value
+    maxTime = 100 #stops once runtime exceeds this value (in seconds)
+    filename = open("phone_tests_depth2", "a") #name of the file the results are written to
+    numRepeats = 5 #times the test is repeated on the same k size before averaging
+    while True: 
+        tests = []
+        while len(tests) < numRepeats:
+            startTime = time.time()
+            x = g.EnumerateStrings(k)
+            runtime = time.time() - startTime
+            tests.append(runtime)
+            if runtime >= maxTime: #ends once time is maxed out
+                filename.write("-------------------------\n")
+                filename.close()
+                return
+        writeString = str(k) + " " + str(round(numpy.mean(tests),4))
         print writeString
         filename.write(writeString + "\n")
-        k += 20
-    filename.write("-------------------------")
-    filename.close()
+        k += 20 #increments by this amount each time
         
+
+def testCaps():
+    g = parsefile("./Hard_tests/phone-2.sl")
+    g.makeConsistent()
+    x = g.EnumerateStrings(100)
+    for dt in x[g.root]:
+        print dt
 
 #cfg1 = parsefile("testfile.sl")
 #cfg2 = parsefile("testfile2.sl")
