@@ -3,6 +3,7 @@ import heapq
 import copy
 import cfg
 import time
+import sympy
 
 #cost value that caps the number of occurrences of different symbols
 #also maintains a "main cost", so the cost used by the algorithm is the main cost unless the symbol cap is reached.
@@ -72,7 +73,8 @@ class DerivationTree:
     cost = None #Stores cost of tree
     costFunc = lambda x: x #Cost function: x is a list of costs of subtrees
     children = [] #list of children that are derivation trees
-
+    hashVal = None #!! be careful, if children are changed, hashVal should too.
+    termHashVal = None #hash value that doesn't consider nonterminals
 
     assert len(children) == func[1]
 
@@ -81,34 +83,59 @@ class DerivationTree:
         self.func = function
         self.costFunc = costFunction
         self.children = childs
+        #hash(self)
         if getCost:
             self.computeCost()
 
+
     #checks if two derivation trees are equal
     #doesnt check cost functions (Turing dropped the ball)
+    #trees with same function struction, but different nonterminals are not equivalent.
     def __eq__(self, other, checkCost = False):
         if self is other:
             return True
-        if(checkCost):
-            if(not self.cost):
-                self.computeCost()
-            if(not other.cost):
-                other.computeCost()
-            assert self.cost == other.cost
-
-        #if( (self.root != other.root) or (self.func != other.func)):
-        #     return False
-
-        if( self.func != other.func):
-            return False
-
-        assert len(self.children) == len(other.children) #ow, func should be different
-
-        #checks if children are all equal
-        return all(map(lambda x: self.children[x] == other.children[x], range(0, len(self.children))))        
+        return hash(self) == hash(other) #!! should we be worried about two things hashing to same value?
+##        if(checkCost):
+##            if(not self.cost):
+##                self.computeCost()
+##            if(not other.cost):
+##                other.computeCost()
+##            assert self.cost == other.cost
+##
+##        #if( (self.root != other.root) or (self.func != other.func)):
+##        #     return False
+##
+##        if( self.func != other.func):
+##            return False
+##
+##        assert len(self.children) == len(other.children) #ow, func should be different
+##
+##        #checks if children are all equal
+##        return all(map(lambda x: self.children[x] == other.children[x], range(0, len(self.children))))        
 
     def __str__(self):
         return self.derStr(False)
+
+    #!! can be made much more efficient by storing hashvalues. 
+    #checks if derivation trees yield the same term (even if through different nonterminals/productions)
+    def sameTerm(self, other):
+        if self.func != other.func:
+            return False
+        if self == other: #checks if they are completely equal
+            return True
+        return all(map(lambda x: self.children[x].sameTerm(other.children[x]), range(0, len(self.children))))        
+
+
+        
+##    def __hash__(self):
+##        if self.hashVal:
+##            return self.hashVal
+##        else:
+##            hashV = hash(self.root) * hash(self.func)
+##            for c in self.children:
+##                hashV += hash(c)
+##            self.hashVal = hashV
+##            return hashV
 
     #nonT is true if the nonterminals are included in the resulting string
     def derStr(self, nonT = True):
@@ -123,11 +150,28 @@ class DerivationTree:
             string += c.derStr(nonT) + ", "
         string = string[:-2] + "]"
         return string
-    
+
     def __hash__(self):
-        h = hash(str(self))
-        if self.cost:
-            h += hash(self.cost)
+        if self.hashVal:
+            return self.hashVal
+        h = hash(self.func) + hash(self.root) #hash(str(self))
+        for i in range(0, len(self.children)):
+            h += hash(self.children[i])*sympy.prime(i+10) #guarantees hash function is different if order of children is swapped
+#        if self.cost:
+#            h += hash(self.cost)
+        self.hashVal = h
+        return h
+
+    #yields a hash value that only considers the term produced by the derivation tree (not the nonterminals/productions)
+    def termHash(self):
+        if self.termHashVal:
+            return self.termHashVal
+        h = hash(self.func) #+ hash(self.root)
+        for i in range(0, len(self.children)):
+            h += self.children[i].termHash()*sympy.prime(i+20) #guarantees hash function is different if order of children is swapped
+#        if self.cost:
+#            h += hash(self.cost)
+        self.termHashVal = h
         return h
 
     #computes cost of tree
@@ -149,6 +193,17 @@ class DerivationTree:
         else:
             self.cost = newCost
         return self.cost
+
+    def __lt__(self, other):
+        if not self.cost:
+            self.computeCost()
+        if not other.computeCost():
+            other.computeCost()
+        if self.cost < other.cost:
+            return True
+        if self.cost > other.cost:
+            return False
+        return hash(self) < hash(other)
 
     #Returns root production of the form [N, f, [X1, X2, ...]] N is root, f is function symbol, [X1,...] is RHS
     def getRootProd(self):
@@ -698,162 +753,141 @@ class CFG:
 ##            newTree.computeCost()
 ##           trees[Y] = newTree
         return trees
+
+
     def EnumerateStrings(self, k):
         (mu, minprods, order) = self.Knijkstra()
         mintrees = self.getTreesFromProds(minprods, order)
 
+        timesPushed = 0
+
+        #for dt in mintrees.values():
+#            print dt.root, dt, hash(dt), dt.termHash()
+
         #Set of trees that are min or have one non-optimal production (At the root)
-        F1 = {Y:DerStruct(k, [mintrees[Y]]) for Y in order}
+        H_ = {Y:DerStruct(k, []) for Y in order}
+        #H_ = {Y:DerStruct(k, [mintrees[Y]]) for Y in order} #!!can remove sets from derstruct
+
+        F = TermStorage(mintrees)
         for p in self.productions:
-            F1[p[0]].dPush(DerivationTree(p[0],
-                                          (p[1], len(p[2])),
-                                          self.costs[p[1]],
-                                          [copy.deepcopy(mintrees[c]) for c in p[2]],
-                                          True))#!! do we need a deepcopy?
-        #old F
-        #F = {Y:[DerStruct([mintrees[Y]])] for Y in order}
+            T = DerivationTree(p[0],
+                      (p[1], len(p[2])),
+                      self.costs[p[1]],
+                      [copy.deepcopy(mintrees[c]) for c in p[2]],
+                      True)#!! do we need a deepcopy?
+            #print p[0], T
+            if not F.contains(T): #!! add to alg
+                H_[p[0]].dPush(T)
+                #print "init: ", T.root, T, hash(T), T.termHash()
 
-        F = {Y:[F1[Y]] for Y in order}
-            
+        #changedNonTsLast = {N:True for N in self.nonterminals} #tracks which nonterminals had updated heaps in the last round
+        #changedNonTsCurrent = {N:False for N in self.nonterminals} #same, but in current round
+
+        doneNT = {N:False for N in self.nonterminals} #tracks which nonterminals have found all possible trees
+        numComplete = 0 
         
-
-        #F1[self.root].printStruct()
-
-        #Fprime = {Y:{0:DerStruct([mintrees[Y]])} for Y in order}
-        #Fprime = {Y:[DerStruct([mintrees[Y]])] for Y in order}
-        #kk = Fprime[order[0]][0].dheap
-
-        changedNonTsLast = {N:True for N in self.nonterminals} #tracks which nonterminals had updated heaps in the last round
-        changedNonTsCurrent = {N:False for N in self.nonterminals} #same, but in current round
-        
-        maxIters = 1
-        for j in range(1,k+1):
-            #print(str(j) + "------------------------------------")
-            maxIters = j
-
-            #old H
-            #H = {Z:copy.deepcopy(F[Z][j-1]) for Z in order}
-
-            H = {Z:F[Z][j-1].copy() for Z in order}
-
-            
-            usedH = set()
-            
-            #H = {Z:DerStruct([mintrees[Z]]) for Z in order}
-            #usedH = set()
-            seenNewDer = False
-            for Y in order:
-
-                F[Y].append(F[Y][j-1].copy()) ##!!copy the der instead of creating it from scratch
-
-                #F[Y].append(copy.deepcopy(F[Y][j-1]))
-
-                
-
-                #Fprime[Y].append(copy.deepcopy(F[Y][j-1])) #possibly dont need deepcopy here. set might be wrong thing to get
-                i = 0
-                while i < k:
-                    if(H[Y].empty()): #don't check every time?
-                        break
-                    T = H[Y].dPop()
-                    usedH.add(T)
-                    #print "T: " + str(T)
-                    assert T.root == Y
-                    if(not F[Y][j].inStruct(T)):
-                        changedNonTsCurrent[T.root] = True
-                        seenNewDer = True
-                    F[Y][j].dPush(T)
-                    #seenNewDer = (seenNewDer or F[Y][j].dPush(T))
-                    #F[Y][j].dPush(T)
-                    #algorithm the Tl values are taken from different sets depending on whether the root production is optimal
-                    optProd = (T.getRootProd() == minprods[Y])
-                    usedT = False
-                    for l in range(0, T.func[1]): #for each argument to root function
-                        if not changedNonTsLast[T.children[l].root]:
-                            continue
-                        #seenDers = []
-                        newDer = False
-                        lDers = []
-                        #print str(T)
-                        if optProd: #production is optimal, so we consider children dist j away
-                            lDers = F[T.children[l].root][j].copy()
-                        else: #production is not optimal, so we consider children dist j-1 away
-                            #print T.getRootProd() 
-                            lDers = F[T.children[l].root][j-1].copy()
-                        #print str(T)
-
-                        #ldt = time.time()
-                        while not lDers.empty():
-                            Tl = lDers.dPop() #!! is this a problem? Are we destroying all of F[T.children][j / j-1] ?
-
-                            if(Tl == T.children[l]):
-                                continue
-
-                            newChildren = copy.copy(T.children)
-                            newChildren[l] = copy.copy(Tl)
-                            
-                            #cT = time.time()
-                            T2 = DerivationTree(T.root,
-                                                T.func,
-                                                T.costFunc,
-                                                newChildren,
-                                                True)
-                            #cT = time.time() - cT
-                            #global copyTime
-                            #copyTime += cT
-
-##                            if(T2 == T): #!! should I compute cost to check equivalence?
-##                                global tequiv
-##                                tequiv = tequiv + 1
-##                                continue
-##                            else:
-##                                global tnequiv
-##                                tnequiv = tnequiv + 1
-#                            b1 = T2 in usedH
-#                            T2.computeCost(False)#
-#                            b2 = T2 in usedH
-                           # assert b1 == b2, str(T2)
-                            if((not H[Y].inStruct(T2)) and (not T2 in usedH)):##!! can we make this test work without computing the cost of T2?
-                                #T2.computeCost(False)#T2.computeCost(True) #!! uncomment and make equiv not calculate equiv.
-                                H[Y].dPush(T2)
-                                newDer = True
-                                changedNonTsCurrent[T.root] = True
-                                break
-                        #global ldersTime
-                        #ldersTime += time.time() - ldt
-                        if newDer:
-                            usedT = True
-                    if usedT: #should we just increment i regardless?
-                        i += 1
-                        #global usedTtimes
-                        #usedTtimes = usedTtimes + 1
-                    else:
-                        i += 1
-                        #global notusedTtimes
-                        #notusedTtimes = notusedTtimes + 1
-#                if F[Y][j].dset != F[Y][j-1].dset:
- #                   seenNewDer = True
-            if not seenNewDer: #no new derivation was added
-                #print "depth is: " + str(j)
+        for j in range(2,k+1):
+            #assert F.numTrees("Start") == j-1, str(j) + str(F)
+            if numComplete == len(self.nonterminals): #stops if all nonterminals have found minimal trees (used in dags)
+                assert False
                 break
-            changedNonTsLast = changedNonTsCurrent
-            changedNonTsCurrent = {N:False for N in self.nonterminals}
-        returnTrees = {Y:set([tree for (_,tree) in heapq.nsmallest(k , F[Y][maxIters].dheap)]) for Y in order}
-##        print("return vals:")
-##        for Y in order:                            
-##            print(Y + ":")
-##            for x in returnTrees[Y]:
-##                print(str(x.cost) + ": " + str(x))
-       # global max_heap_size
-       # print "MAX_HEAP:", str(max_heap_size)
-       # print "T == T2", str(tequiv)
-       # print "T != T2", str(tnequiv)
-       # global copyTime
-       # print "Copy Time: ", str(copyTime)
-       # global ldersTime
-       # print "lders_time: " + str(ldersTime)
-       # print "used vs not used T ", str(usedTtimes), " ", str(notusedTtimes)
-        return returnTrees
+            #seenNewDer = False
+            for Y in order:
+                if doneNT[Y]:
+                    continue
+
+                T_ = F.getLast(Y)
+                for l in range(0, len(T_.children)):
+                    #assert F_dict[T_.children[l].root].get(T_.children[l]), str(T_) + " " + str(T_.children[l]) + " " + str([l_.root for l_ in T_.children])
+                    tl_index = F.getPos(T_.children[l])# F_dict[T_.children[l].root][T_.children[l]]
+
+                    Z_l = T_.children[l].root
+
+                    #print T_
+
+                    if F.numTrees(Z_l) > tl_index + 1: #len(F_order[T_.children[l].root]) > Tl_index + 1:
+                        newChildren = copy.copy(T_.children)
+                        newChildren[l] = F.get(Z_l, tl_index+1) #F_order[T_.children[l].root][Tl_index+1]  #!! should we copy this tree with : copy.copy(Tl)                           
+                        T_2 = DerivationTree(T_.root,
+                                            T_.func,
+                                            T_.costFunc,
+                                            newChildren,
+                                            True)
+                        H_[Y].dPush(T_2)
+#                        print "pushing: ", T_2
+
+                #print "T:", T_.root, T_
+                #print "T_prime", T_prime
+                contHere = False
+                T_prime = False
+                while True:
+                    if H_[Y].empty(): #!! add to alg?
+                        doneNT[Y] = True
+                        numComplete += 1
+                        contHere = True
+                        break
+                    T_prime = H_[Y].dPop()
+                    if not F.contains(T_prime): break
+                if contHere: continue
+                assert T_prime
+                F.push(T_prime)
+        #print F
+        return F.F_order[self.root]                   
+
+
+#stores and looks up trees.
+#tracks which trees appear from which nonterminals, but considers trees with same terms and different nonterminals to be the same
+class TermStorage:
+    F_order = {}  #F_order[Y] is ordered list of mincost trees from Y
+    F_dict = {}   #F_dict[Y][T.termHash()] is the position of T in F_order[Y] 
+
+    def __init__(self, mintrees):
+        for A in mintrees:
+            self.F_order[A] = []
+            self.F_dict[A] = {}
+            self.push(mintrees[A])
+            #self.F_order[A] = [mintrees[A]]
+            #self.F_dict[A] = {mintrees[A].termHash():0} 
+
+    def push(self, T):
+        assert T != None
+        if not T:
+            for v in F_order:
+                for t in v:
+                    print t
+            assert False
+        if not T.cost:
+            T.computeCost()
+        self.F_order[T.root].append(T)
+        self.F_dict[T.root][T.termHash()] = len(self.F_order[T.root])-1
+
+    #returns the position of T in F_order
+    def getPos(self, T):
+        return self.F_dict[T.root][T.termHash()]
+
+    #returns the ith tree in
+    def get(self, A, i):
+        return self.F_order[A][i]
+    
+    def contains(self, T):
+        if T.termHash() in self.F_dict[T.root]: #!! this didn't work but should have been faster -> self.F_dict[T.root].get(T.termHash()):
+            return True
+        return False
+
+    #returns highest cost tree produced from A so far
+    def getLast(self, A):
+        return self.F_order[A][-1]
+
+    def numTrees(self, A):
+        return len(self.F_order[A])
+
+    def __str__(self):
+        returnStr = ""
+        for Y in self.F_order:
+            returnStr += Y + ": \n"
+            for t in self.F_order[Y]:
+                returnStr += "     " + str(t) + "\n"
+        return returnStr
                         
 #phone-2.sl large heap size
 #array_sum_2_5-Q.sl
@@ -867,6 +901,10 @@ class DerStruct:
     maxCostDer = float('-inf') #stores the cost of the largest element (used in dPush)
     dheap = [] #used to find min-cost derivation
     dset = set() #used to check if tree is in set
+
+    #implements a doubly linked list, pointing elts to their successor (in terms of cost)
+    #frontPointers = {} #if frontPointer[x] = "first" then x is first value
+    #backPointers = {}  #if frontPointer[x] = "last" then x is last value
     def __init__(self, newk, ders = []):
         self.dheap = []
         self.dset = set()
@@ -886,12 +924,10 @@ class DerStruct:
         if(not d in self.dset):
             heapq.heappush(self.dheap, (d.cost, d))
             self.dset.add(d)
-            self.maxCostDer = max(self.maxCostDer, d.cost)
-            #global max_heap_size
-            #max_heap_size = max(max_heap_size, len(self.dset))
+            self.maxCostDer = max(self.maxCostDer, d.cost)            
         return True
-    def inStruct(self, d):
-        return d in self.dset
+#    def inStruct(self, d):
+#        return d in self.dset
     #pops min elt and removes it from set
     def dPop(self):
         d = heapq.heappop(self.dheap)
